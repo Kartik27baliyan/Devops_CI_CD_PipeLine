@@ -15,7 +15,10 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Build the Docker image with proper error handling
+                    // Clean up any existing image with the same name
+                    sh "docker rmi kartik-python-app:${env.BUILD_ID} 2>/dev/null || true"
+                    
+                    // Build the Docker image
                     dockerImage = docker.build("kartik-python-app:${env.BUILD_ID}")
                 }
             }
@@ -24,15 +27,24 @@ pipeline {
         stage('Test Docker Image') {
             steps {
                 script {
-                    // Run container with explicit error handling
+                    // Clean up any existing container first
+                    sh "docker stop test-container-${env.BUILD_ID} 2>/dev/null || true"
+                    sh "docker rm test-container-${env.BUILD_ID} 2>/dev/null || true"
+                    
+                    // Run container with explicit port mapping
                     try {
-                        dockerContainer = dockerImage.run("-p 5000:5000 -d --name test-container-${env.BUILD_ID}")
+                        dockerContainer = dockerImage.run(
+                            "--name test-container-${env.BUILD_ID} " +
+                            "-p 5000:5000 " +
+                            "-d"
+                        )
                         
-                        // Wait for application to start with better approach
+                        // Wait for application to start
                         waitForContainerStart()
                         
                         // Test the application
                         testApplication()
+                        
                     } catch (Exception e) {
                         echo "Error during test stage: ${e.getMessage()}"
                         currentBuild.result = 'FAILURE'
@@ -52,20 +64,39 @@ pipeline {
     }
 }
 
-// Define functions outside pipeline to avoid CPS transformation issues
 def waitForContainerStart() {
     // Wait with retries for the application to start
-    def maxAttempts = 10
-    def waitTime = 3
+    def maxAttempts = 12
+    def waitTime = 5
     
     for (int i = 0; i < maxAttempts; i++) {
         try {
-            // Use docker exec to check if the application is ready
-            sh "docker exec test-container-${env.BUILD_ID} curl -s http://localhost:5000 > /dev/null 2>&1 && echo 'Application is ready'"
-            echo "Application started successfully after ${i * waitTime} seconds"
-            return
+            // Check if container is running
+            def containerStatus = sh(
+                script: "docker inspect -f '{{.State.Status}}' test-container-${env.BUILD_ID}",
+                returnStdout: true
+            ).trim()
+            
+            if (containerStatus != "running") {
+                throw new Exception("Container not running")
+            }
+            
+            // Check if application is responding
+            def responseCode = sh(
+                script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000 || echo '000'",
+                returnStdout: true
+            ).trim()
+            
+            if (responseCode == "200") {
+                echo "Application started successfully after ${i * waitTime} seconds"
+                return
+            }
+            
+            echo "Application not ready yet (HTTP: ${responseCode}), waiting ${waitTime} seconds... (Attempt ${i+1}/${maxAttempts})"
+            sleep(waitTime)
+            
         } catch (Exception e) {
-            echo "Application not ready yet, waiting ${waitTime} seconds... (Attempt ${i+1}/${maxAttempts})"
+            echo "Waiting for container to start... (Attempt ${i+1}/${maxAttempts})"
             sleep(waitTime)
         }
     }
@@ -75,31 +106,49 @@ def waitForContainerStart() {
 def testApplication() {
     // Test if the application is running correctly
     sh '''
-        response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000) || true
-        
-        if [ "$response" = "200" ]; then
-            content=$(curl -s http://localhost:5000)
-            if echo "$content" | grep -q "Hello, DevOps World!"; then
-                echo "--- Test Passed! Application is running correctly. ---"
+        # Try multiple times in case the application is still starting up
+        for i in {1..5}; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000) || true
+            
+            if [ "$response" = "200" ]; then
+                content=$(curl -s http://localhost:5000)
+                if echo "$content" | grep -q "Hello, DevOps World!"; then
+                    echo "--- Test Passed! Application is running correctly. ---"
+                    exit 0
+                else
+                    echo "--- Test Failed! Application returned unexpected content. ---"
+                    echo "Response content: $content"
+                    sleep 2
+                fi
             else
-                echo "--- Test Failed! Application returned unexpected content. ---"
-                echo "Response content: $content"
-                exit 1
+                echo "--- Attempt $i: Application returned HTTP code: $response ---"
+                sleep 2
             fi
-        else
-            echo "--- Test Failed! Application returned HTTP code: $response ---"
-            exit 1
-        fi
+        done
+        echo "--- All test attempts failed ---"
+        exit 1
     '''
 }
 
 def cleanupContainer(containerName) {
     // Clean up containers with better error handling
     try {
-        sh "docker stop ${containerName} || true"
-        sh "docker rm ${containerName} || true"
+        sh """
+            docker stop ${containerName} 2>/dev/null || true
+            docker rm ${containerName} 2>/dev/null || true
+        """
         echo "Successfully cleaned up container: ${containerName}"
     } catch (Exception e) {
         echo "Warning: Failed to clean up container ${containerName}: ${e.getMessage()}"
+    }
+    
+    // Also clean up any dangling containers
+    try {
+        sh """
+            docker ps -aq -f name=test-container | xargs -r docker stop 2>/dev/null || true
+            docker ps -aq -f name=test-container | xargs -r docker rm 2>/dev/null || true
+        """
+    } catch (Exception e) {
+        echo "Warning during general cleanup: ${e.getMessage()}"
     }
 }
