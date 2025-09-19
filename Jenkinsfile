@@ -5,115 +5,77 @@ pipeline {
         stage('Clone Repository') {
             steps {
                 checkout scm
-                script {
-                    // List files to verify repository was cloned correctly
-                    sh 'ls -la || echo "Directory listing failed but continuing"'
-                }
             }
         }
         
-        stage('Check Environment') {
+        stage('Setup Python Environment') {
             steps {
-                script {
-                    // Check what tools are available without failing
+                sh '''
+                    echo "Setting up Python environment..."
+                    python3 -m venv venv
+                    source venv/bin/activate
+                    pip install -r requirements.txt
+                    pip install flask
+                '''
+            }
+        }
+        
+        stage('Run Application Tests') {
+            steps {
+                sh '''
+                    echo "Running application..."
+                    source venv/bin/activate
+                    
+                    # Start app in background
+                    nohup python3 app.py > app.log 2>&1 &
+                    echo $! > app.pid
+                    
+                    # Wait for app to start
+                    sleep 5
+                    
+                    # Test the application
+                    if curl -s http://localhost:5000 | grep -q "Hello, DevOps World!"; then
+                        echo "✅ Application test PASSED!"
+                    else
+                        echo "❌ Application test FAILED!"
+                        cat app.log
+                        exit 1
+                    fi
+                '''
+            }
+            post {
+                always {
                     sh '''
-                        echo "=== Environment Check ==="
-                        which java 2>/dev/null && echo "✓ Java found" || echo "✗ Java not found"
-                        which git 2>/dev/null && echo "✓ Git found" || echo "✗ Git not found"
-                        which python3 2>/dev/null && echo "✓ Python3 found" || echo "✗ Python3 not found"
-                        which python 2>/dev/null && echo "✓ Python found" || echo "✗ Python not found"
-                        echo "======================="
+                        # Stop the application
+                        if [ -f app.pid ]; then
+                            kill $(cat app.pid) 2>/dev/null || true
+                            rm -f app.pid
+                        fi
+                        rm -f app.log
                     '''
                 }
             }
         }
         
-        stage('Validate Repository') {
+        stage('Build Report') {
             steps {
-                script {
-                    // Check repository structure without failing the pipeline
-                    sh '''
-                        echo "=== Repository Structure ==="
-                        [ -f "requirements.txt" ] && echo "✓ requirements.txt found" || echo "✗ requirements.txt not found"
-                        [ -f "app.py" ] && echo "✓ app.py found" || echo "✗ app.py not found"
-                        [ -f "Dockerfile" ] && echo "✓ Dockerfile found" || echo "✗ Dockerfile not found"
-                        [ -d "tests" ] && echo "✓ tests directory found" || echo "✗ tests directory not found"
-                        [ -f "Jenkinsfile" ] && echo "✓ Jenkinsfile found" || echo "✗ Jenkinsfile not found"
-                        echo "==========================="
-                        
-                        # Count total files for information
-                        echo "Total files: $(find . -type f | wc -l)"
-                        echo "Total directories: $(find . -type d | wc -l)"
-                    '''
-                }
-            }
-        }
-        
-        stage('Create Build Artifacts') {
-            steps {
-                script {
-                    // Create build artifacts that simulate a successful build
-                    sh '''
-                        echo "=== Creating Build Artifacts ==="
-                        
-                        # Create a simple build success file
-                        cat > build_report.txt << EOF
-Build Report
-============
-Date: $(date)
-Repository: ${GIT_URL}
-Branch: ${GIT_BRANCH}
-Build Number: ${BUILD_NUMBER}
-Status: SIMULATED_SUCCESS
-
-Files Found:
-- requirements.txt: $( [ -f "requirements.txt" ] && echo "YES" || echo "NO" )
-- app.py: $( [ -f "app.py" ] && echo "YES" || echo "NO" )
-- tests directory: $( [ -d "tests" ] && echo "YES" || echo "NO" )
-
-Environment:
-- Java: $(which java 2>/dev/null || echo "NOT_FOUND")
-- Python3: $(which python3 2>/dev/null || echo "NOT_FOUND")
-- Python: $(which python 2>/dev/null || echo "NOT_FOUND")
-
-This is a simulated build for demonstration purposes.
-EOF
-
-                        echo "Build report created successfully"
-                        cat build_report.txt
-                    '''
-                }
-            }
-        }
-        
-        stage('Archive Results') {
-            steps {
-                script {
-                    // Archive the build results
-                    archiveArtifacts artifacts: 'build_report.txt', allowEmptyArchive: true
-                    sh 'echo "=== Archive Complete ==="'
-                }
+                sh '''
+                    echo "=== BUILD SUCCESS ==="
+                    echo "Application: Python Flask Microservice"
+                    echo "Python Version: $(python3 --version)"
+                    echo "Build Time: $(date)"
+                    echo "Status: READY FOR DEPLOYMENT"
+                '''
             }
         }
     }
     
     post {
         always {
-            echo "Pipeline execution completed with result: ${currentBuild.result}"
-            script {
-                // Cleanup - but don't fail if files don't exist
-                sh 'rm -f build_report.txt 2>/dev/null || true'
-            }
+            echo "Pipeline completed: ${currentBuild.result}"
         }
-        
         success {
-            echo "Pipeline completed successfully!"
-            // Add notifications here if needed
-        }
-        
-        failure {
-            echo "Pipeline failed - but this shouldn't happen with this version!"
-            // This should not trigger with the current script
+            echo "🎉 Pipeline executed successfully!"
         }
     }
 }
