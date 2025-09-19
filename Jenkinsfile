@@ -1,6 +1,9 @@
 pipeline {
     agent any
-
+    // Environment variable to disable BuildKit and use legacy Docker builder
+    environment {
+        DOCKER_BUILDKIT = "0"
+    }
     stages {
         stage('Clone Repository') {
             steps {
@@ -12,7 +15,8 @@ pipeline {
             steps {
                 script {
                     // Build the Docker image, tagging it with the build number
-                    dockerImage = docker.build("kartik-python-app:${env.BUILD_ID}")
+                    // Using 'def' to properly declare the variable
+                    def dockerImage = docker.build("kartik-python-app:${env.BUILD_ID}")
                 }
             }
         }
@@ -21,7 +25,8 @@ pipeline {
             steps {
                 script {
                     // Run the container in the background
-                    dockerContainer = dockerImage.run("-p 5000:5000 -d --name test-container-${env.BUILD_ID}")
+                    // Using 'def' to properly declare the variable
+                    def dockerContainer = dockerImage.run("-p 5000:5000 -d --name test-container-${env.BUILD_ID}")
                     // Wait a few seconds for the app to start
                     sleep(5)
                     // Test if the application is running by curling localhost
